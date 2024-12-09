@@ -1,0 +1,193 @@
+name: Build/Build On Push
+on:
+  push:
+    branches:
+      - '*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rest-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          architecture: "x64"
+
+      - name: Install pipenv
+        run: pip install pipenv
+
+      - name: Run Unit Test and Lint
+        run: |
+          cd ${{ github.workspace }}/apps/rest
+          export PIP_INDEX_URL="https://pypi.org/simple"
+          export PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+          pipenv sync --dev
+          # pipenv run lint-ci # lint は isaac のコードでケアされていないので、とりあえずコメントアウト
+          pipenv run test-ci
+          pipenv run test-cov-ci
+
+  rest-publish:
+    runs-on: ubuntu-latest
+    environment: BUILD
+    needs: rest-test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          architecture: "x64"
+
+      - name: Install pipenv
+        run: pip install pipenv
+
+      - name: Package Rest Module
+        id: package-rest-module
+        run: |
+          cd ${{ github.workspace }}/apps/rest
+          export PIP_INDEX_URL="https://pypi.org/simple"
+          export PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+          PIP_TARGET=${{ github.workspace }}/apps/rest/.python_packages/lib/site-packages/ pipenv sync
+
+          shopt -s extglob dotglob
+          rm -rf -- !(.|..|.python_packages|src|function_app.py|host.json)
+          zip -r rest .
+
+          downloadDir=$(mktemp -d)
+          cp rest.zip ${downloadDir}
+          echo "download-local-dir=${downloadDir}" >> $GITHUB_OUTPUT
+
+      - name: GetCurrentTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Upload Module To Builds
+        id: upload-module-to-builds
+        uses: ./.github/actions/upload-module-to-blob
+        with:
+          region: JPE
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          resource-type: ModuleStorageAccount
+          destination-container: ${{ vars.BUILD_MODULES_STORED_CONTAINER }}
+          destination-dir: ${{github.ref_name}}_rest_${{ steps.get-current-datetime.outputs.now }}.${{github.run_number}}
+          source-dir: ${{steps.package-rest-module.outputs.download-local-dir}}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  front-test:
+    runs-on: ubuntu-latest
+    environment: BUILD
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # - name: Download KDS from ModuleStorageAccount
+      #   id: download-kds
+      #   uses: ./.github/actions/download-module
+      #   with:
+      #     region: JPE
+      #     dept: ${{ vars.DEPT }}
+      #     app-name: ${{ vars.APP_NAME }}
+      #     prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+      #     storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+      #     storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+      #     download-source-container: libs
+      #     download-pattern: kit-design-system
+      #     azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      #     azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      #     azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # - name: Copy KDS
+      #   run: |
+      #     mkdir ${{ github.workspace }}/apps/front/libs
+      #     unzip ${{ steps.download-kds.outputs.download-dir}}/kit-design-system.zip -d ${{ github.workspace }}/apps/front/libs
+      #     # ls -al ${{ github.workspace }}/apps/front/libs
+      #     # ls -al ${{ github.workspace }}/apps/front/libs/kit-design-system
+      #   shell: bash
+
+      # - name: Npm Run Unit Test And Lint
+      #   run: |
+      #     cd ${{ github.workspace }}/apps/front/
+      #     npm ci
+      #     npm run test:ci
+      #     npm run lint:ci
+
+  front-publish:
+    runs-on: ubuntu-latest
+    needs: front-test
+    environment: BUILD
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download KDS from ModuleStorageAccount
+        id: download-kds
+        uses: ./.github/actions/download-module
+        with:
+          region: JPE
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          download-source-container: libs
+          download-pattern: kit-design-system
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Copy KDS
+        run: |
+          mkdir ${{ github.workspace }}/apps/front/libs
+          unzip ${{ steps.download-kds.outputs.download-dir}}/kit-design-system.zip -d ${{ github.workspace }}/apps/front/libs
+        shell: bash
+
+      - name: Npm Run Build
+        run: |
+          cd ${{ github.workspace }}/apps/front/
+          npm ci
+          npm run build
+          cp staticwebapp.config.json ./dist
+
+      - name: GetCurrentTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Upload Module To Builds
+        id: upload-module-to-builds
+        uses: ./.github/actions/upload-module-to-blob
+        with:
+          region: JPE
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          resource-type: ModuleStorageAccount
+          destination-container: ${{ vars.BUILD_MODULES_STORED_CONTAINER }}
+          destination-dir: ${{github.ref_name}}_front_${{ steps.get-current-datetime.outputs.now }}.${{github.run_number}}
+          source-dir: ${{ github.workspace }}/apps/front/dist/
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

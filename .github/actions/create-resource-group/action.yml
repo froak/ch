@@ -1,0 +1,103 @@
+name: "create resource group"
+
+inputs:
+  region:
+    required: true
+    type: string
+    default: JPE
+  env:
+    required: true
+    type: string
+    default: DEV
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  desc-prefix:
+    type: string
+  desc-suffix:
+    type: string
+  is-stateless:
+    description: true=必ず作成, false=なかったら作成、あったら既存を利用
+    type: boolean
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  resource-group-name: 
+    value: ${{ steps.create-resource-group.outputs.resource-group-name }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Create Resource Group
+      id: create-resource-group
+      run: |
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        location=$(getLocation ${{inputs.region}})
+        serviceName="AZSA Isaac"
+        businessOwnersDepartment="Digital Innovation"
+        businessOwnersEmail="Kentaro.Hayashi@jp.kpmg.com"
+        systemAdministratorsDepartment="Digital Innovation"
+        systemAdministratorsEmail="Shunsuke.Ota@jp.kpmg.com"
+        billingContactsDepartment="Digital Innovation"
+        billingContactsEmail="Taichi.Kuribayashi@jp.kpmg.com"
+
+        echo ===================================
+        echo location:"${location}"
+        echo ===================================
+
+        # 必ず作成するオプションを指定
+        if [ ${{ inputs.is-stateless}} = "true" ]; then
+              echo "true"
+              resourceGroupName=$(createResourceGroupName ${{inputs.region}} ${{inputs.env}} ${{inputs.dept}} ${{inputs.app-name}} ${{inputs.desc-prefix}} ${{inputs.desc-suffix}})
+              az group create --name ${resourceGroupName} --location ${location} \
+              --tags "Service name=${serviceName}" \
+              "Business owner's department=${businessOwnersDepartment}" \
+              "Business owner's email=${businessOwnersEmail}" \
+              "System administrator's department=${systemAdministratorsDepartment}" \
+              "System administrator's email=${systemAdministratorsEmail}" \
+              "Billing contact's department=${billingContactsDepartment}" \
+              "Billing contact's email=${billingContactsEmail}"              
+
+        # 無かったら作成、あったら作成しない
+        else
+          echo "false"
+            resourceGroupNamePrefix=$(createResourceGroupName \
+                                      ${{inputs.region}} \
+                                      ${{inputs.env}} \
+                                      ${{inputs.dept}} \
+                                      ${{inputs.app-name}} \
+                                      ${{inputs.desc-prefix}})
+            resourceGroupNameExists=$(getResourceGroupName ${resourceGroupNamePrefix})
+            if [ -z ${resourceGroupNameExists} ]; then
+              resourceGroupName=$(createResourceGroupName ${{inputs.region}} ${{inputs.env}} ${{inputs.dept}} ${{inputs.app-name}} ${{inputs.desc-prefix}} ${{inputs.desc-suffix}})
+              az group create --name ${resourceGroupName} --location ${location} \
+              --tags "Service name=${serviceName}" \
+              "Business owner's department=${businessOwnersDepartment}" \
+              "Business owner's email=${businessOwnersEmail}" \
+              "System administrator's department=${systemAdministratorsDepartment}" \
+              "System administrator's email=${systemAdministratorsEmail}" \
+              "Billing contact's department=${billingContactsDepartment}" \
+              "Billing contact's email=${billingContactsEmail}"
+            else
+              resourceGroupName=${resourceGroupNameExists}
+            fi
+        fi
+        echo "resource-group-name=${resourceGroupName}" >> $GITHUB_OUTPUT
+
+
+      shell: bash

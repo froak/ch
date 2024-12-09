@@ -1,0 +1,110 @@
+name: Util/Delete Older Stacks
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        required: true
+        default: "DEV"
+        type: choice
+        options:
+          - DEV
+          - QA
+          - STG
+          - PRD
+      region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - JPW
+      does-delete-rest-stack:
+        required: true
+        default: false
+        type: boolean
+      does-delete-front-stack:
+        required: true
+        default: false
+        type: boolean
+      does-delete-agw-stack:
+        required: true
+        default: false
+        type: boolean
+        
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  set-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.set-matrix.outputs.target }}
+    steps:
+      - name: Set dynamic matrix
+        id: set-matrix
+        run: |
+          if [[ ${{ inputs.does-delete-rest-stack }} == "true" ]]; then
+              result+=("${{ vars.REST_RESOURCEGROUP_NAME_PREFIX }}")
+          fi
+          if [[ ${{ inputs.does-delete-front-stack }} == "true" ]]; then
+              result+=("${{ vars.FRONT_RESOURCEGROUP_NAME_PREFIX }}")
+          fi
+          if [[ ${{ inputs.does-delete-agw-stack }} == "true" ]]; then
+              result+=("${{ vars.AGW_RESOURCEGROUP_NAME_PREFIX }}")
+          fi
+          printf -v str '"%s",' "${result[@]}"
+          str=[${str%,}]
+          echo "target=$(echo $str | jq -c)" >> $GITHUB_OUTPUT   
+
+  delete-stack:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    needs: set-matrix
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: "${{fromJson(needs.set-matrix.outputs.target)}}"    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4      
+
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Fetch Delete Target Resource Group Name
+        id: fetch-delete-target-resource-group-name
+        run: |
+            source ${{ github.workspace }}/.github/scripts/shell.sh        
+            echo ${{ needs.set-matrix.outputs.target }}
+            resourceGroupNamePrefix=$(createResourceGroupName \
+                                                  ${{ inputs.region }} \
+                                                  ${{ inputs.env }} \
+                                                  ${{ vars.DEPT }} \
+                                                  ${{ vars.APP_NAME }} \
+                                                  ${{ matrix.target }}
+                                                  )
+            
+            resourceGroupName=$(getResourceGroupNameList ${resourceGroupNamePrefix} | tr " " "\n" | sort | head -n 1 )
+            echo "resource-group-name=${resourceGroupName}" >> $GITHUB_OUTPUT   
+            echo ${resourceGroupNamePrefix}                                                              
+            echo ${resourceGroupName}            
+        shell: bash
+  
+      - name: Delete Resource Group
+        id: delete-resource-group
+        uses: ./.github/actions/delete-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          resource-group-name : ${{ steps.fetch-delete-target-resource-group-name.outputs.resource-group-name }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

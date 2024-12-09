@@ -1,0 +1,157 @@
+name: "Fetch Resource Group Name"
+
+inputs:
+  region:
+    required: true
+    type: string
+  env:
+    required: true
+    type: string
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  target:
+    required: true
+    type: string
+  prefix:
+    required: true
+    type: string
+  storage-account-desc:
+    required: true
+    type: string
+  storage-account-seq-number:
+    required: true
+    type: string
+  source-branch-name:
+    required: true
+    type: string
+  build-version:
+    required: true
+    type: string
+    default: Latest
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  build-version:
+    value: ${{ steps.fetch-build-version.outputs.build-version }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Enabled Public Network Access Restriction Of ModuleStorageAccount
+      id: enabled-public-network-access
+      uses: ./.github/actions/change-public-network-access-restriction
+      with:
+        region: ${{ inputs.region }}
+        env: PRD
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        resource-type: ModuleStorageAccount
+        storage-account-desc: ${{ inputs.storage-account-desc }}
+        storage-account-seq-number: ${{ inputs.storage-account-seq-number }}
+        after: Enabled
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Fetch Build Version
+      id: fetch-build-version
+      run: |
+        echo ==================================
+        echo "Fetch Build Version"
+        echo ==================================
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        # if [ ${{ inputs.build-version }} = "Latest" ]; then
+        #   buildVersion=$(az storage blob list --auth-mode login \
+        #                                       --account-name ${{ steps.enabled-public-network-access.outputs.resource-name }} \
+        #                                       --container-name builds \
+        #                                       --query "[?starts_with(name,\`${{ inputs.source-branch-name }}_${{ inputs.target }}\`)].name" \
+        #                                       -otsv | sort | tail -1 | cut -d/ -f1)
+        # else
+        #   buildVersion=${{ inputs.build-version }}
+        # fi
+
+        # # loop until get buildVersion or 60 retries
+        # while [[ -z "${buildVersion}" && counter -lt 60 ]]
+        # do
+        #     echo "retry ${counter} times"
+        #     sleep 1 # wait for 1 second
+        #     buildVersion=$(az storage blob list --auth-mode login \
+        #                                         --account-name ${{ steps.enabled-public-network-access.outputs.resource-name }} \
+        #                                         --container-name builds \
+        #                                         --query "[?starts_with(name,\`${{ inputs.source-branch-name }}_${{ inputs.target }}\`)].name" \
+        #                                         -otsv | sort | tail -1 | cut -d/ -f1)
+        #     counter=$((counter+1))
+        #     sleep 1
+        # done                                  
+        # if [[ -n "${buildVersion}" ]]
+        # then
+        #   echo "The operation finished successfully"
+        # else
+        #   echo "The operation didn't finish within the expected time"
+        #   exit 1
+        # fi        
+
+        set +e
+        counter=0
+        while [[ $counter -lt 60 ]]
+        do
+            echo loop ${counter} times.
+            buildVersion=$(az storage blob list --auth-mode login \
+                                              --account-name ${{ steps.enabled-public-network-access.outputs.resource-name }} \
+                                              --container-name builds \
+                                              --query "[?starts_with(name,\`${{ inputs.source-branch-name }}_${{ inputs.target }}\`)].name" \
+                                              -otsv | sort | tail -1 | cut -d/ -f1)
+            if [[ $? -ne 0 ]]; then
+                let counter++
+                sleep 1
+            else
+                break
+            fi
+        done        
+        set -e
+
+        if [[ -n "${buildVersion}" ]]
+        then
+          echo "The operation finished successfully"
+        else
+          echo "The operation didn't finish within the expected time"
+          exit 1
+        fi     
+
+        echo ${buildVersion}
+        echo "build-version=${buildVersion}" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Disabled Public Network Access Restriction Of ModuleStorageAccount
+      id: disabled-public-network-access
+      uses: ./.github/actions/change-public-network-access-restriction
+      with:
+        region: ${{ inputs.region }}
+        env: PRD
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        resource-type: ModuleStorageAccount
+        storage-account-desc: ${{ inputs.storage-account-desc }}
+        storage-account-seq-number: ${{ inputs.storage-account-seq-number }}
+        after: Disabled
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}

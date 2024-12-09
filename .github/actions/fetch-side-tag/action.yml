@@ -1,0 +1,57 @@
+name: "Fetch Side Tag"
+
+inputs:
+  region:
+    required: true
+    type: string
+  env:
+    required: true
+    type: string
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  prefix:
+    required: true
+    type: string
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  side:
+    value: ${{ steps.fetch-side-tag.outputs.side }}
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Fetch Side Tag
+      id: fetch-side-tag
+      run: |
+        echo ==================================
+        echo "Fetch Side Tag"
+        echo ==================================
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        resourceGroupNamePrefix=$(createResourceGroupName \
+                                    ${{inputs.region}} \
+                                    ${{inputs.env}} \
+                                    ${{inputs.dept}} \
+                                    ${{inputs.app-name}} \
+                                    ${{inputs.prefix}})
+        side=$(getSide ${resourceGroupNamePrefix})
+        echo ${side}
+        echo "side=${side}" >> $GITHUB_OUTPUT
+      shell: bash

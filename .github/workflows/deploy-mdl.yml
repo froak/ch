@@ -1,0 +1,127 @@
+name: Deploy/Deploy Mdl
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        required: true
+        default: "PRD"
+        type: choice
+        options:
+          - PRD
+      region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - JPW
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-cmn:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Current DateTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Create Resource Group
+        id: create-resource-group
+        uses: ./.github/actions/create-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          desc-prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          desc-suffix: ${{ steps.get-current-datetime.outputs.now }}
+          is-stateless: false
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy MDL Resources
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+
+          location=$(getLocation ${{ inputs.region }})
+
+          vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ vars.DEPT }} ${{ vars.APP_NAME }})
+          vnetId=`az network vnet show --name ${vnetName} --resource-group ${vnetResourceGroupName} --query id -otsv`
+
+          subnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          pepSubnetName=$(createSubnetName ${{ inputs.env }} ${{ vars.APP_NAME }} "pep" )
+          pepSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                    --vnet-name ${vnetName} \
+                                                    --query "[?name==\`${pepSubnetName}\`].id | [0]" -otsv)          
+
+          moduleStorageAccountName=$(createStorageAccountName \
+                                    True \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }} \
+                                    ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+                                    )
+                                                                
+          mdlBlobPrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    "mdl-blob")
+
+          mdlFilePrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    "mdl-file")   
+          echo ::group::deploymdl ================================================"
+          echo ::group::deploymdl location:${location}"
+          echo ::group::deploymdl vnetResourceGroupName:${vnetResourceGroupName}"
+          echo ::group::deploymdl vnetName:${vnetName}"
+          echo ::group::deploymdl vnetId:${vnetId}"
+          echo ::group::deploymdl subnetResourceGroupName:${subnetResourceGroupName}"
+          echo ::group::deploymdl pepSubnetName:${pepSubnetName}"
+          echo ::group::deploymdl pepSubnetId:${pepSubnetId}"
+          echo ::group::deploymdl moduleStorageAccountName:${moduleStorageAccountName}"
+          echo ::group::deploymdl blobPrivateEndpointName:${blobPrivateEndpointName}"
+          echo ::group::deploymdl mdlFilePrivateEndpointName:${mdlFilePrivateEndpointName}"
+          echo ::group::deploymdl ================================================"
+
+          az deployment group create --resource-group $(resourceGroupName) \
+          --mode Incremental \
+          --template-file ${{ github.workspace }}/infra/mdl_stack.bicep \
+          --parameters location=${location} \
+          pepSubnetId=${pepSubnetId} \
+          moduleStorageAccountName=${moduleStorageAccountName} \
+          mdlBlobPrivateEndpointName=${mdlBlobPrivateEndpointName} \
+          mdlFilePrivateEndpointName=${mdlFilePrivateEndpointName} \
+          privateDnsZoneSubscriptionId=${{ vars.PRIVATE_DNS_ZONE_SUBSCRIPTION_ID }} \
+          privateDnsZoneResourceGroupName=${{ vars.PRIVATE_DNS_ZONE_RESOURCEGROUP_NAME }} \
+          privateDnsZoneBlob=${{ vars.PRIVATE_DNS_ZONE_BLOB }} \
+          privateDnsZoneFile=${{ vars.PRIVATE_DNS_ZONE_FILE }}
+        shell: bash
+
+      - name: Tag Addtional Info To Resource Group
+        id: tag-additional-info-to-resource-group
+        uses: ./.github/actions/tag-additional-info-to-resource-group
+        with:
+          resource-group-name: ${{ steps.create-resource-group.outputs.resource-group-name }}
+          ref-name: ${{ github.ref_name }}
+          commit-id: ${{ github.sha }}
+          side: ""
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

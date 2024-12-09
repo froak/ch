@@ -1,0 +1,56 @@
+name: "Fetch Resource Group Name"
+
+inputs:
+  region:
+    required: true
+    type: string
+  env:
+    required: true
+    type: string
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  prefix:
+    required: true
+    type: string
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  resource-group-name:
+    value: ${{ steps.fetch-resource-group-name.outputs.resource-group-name }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Fetch Resource Group Name
+      id: fetch-resource-group-name
+      run: |
+        echo ==================================
+        echo "Fetch Resource Group Name"
+        echo ==================================
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        resourceGroupNamePrefix=$(createResourceGroupName \
+                                    ${{inputs.region}} \
+                                    ${{inputs.env}} \
+                                    ${{inputs.dept}} \
+                                    ${{inputs.app-name}} \
+                                    ${{inputs.prefix}})
+        resourceGroupName=$(getResourceGroupName ${resourceGroupNamePrefix})
+        echo "resource-group-name=${resourceGroupName}" >> $GITHUB_OUTPUT
+
+      shell: bash

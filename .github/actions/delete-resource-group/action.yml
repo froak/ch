@@ -1,0 +1,65 @@
+name: 'remove resource group'
+
+inputs:
+  region:
+    required: true
+    type: string
+    default: JPE
+  env:
+    required: true
+    type: string
+    default: DEV
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  resource-group-name:
+    required: true
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}  
+
+    - name: Delete Resource Group
+      run: |
+        source ${{ github.workspace }}/.github/scripts/shell.sh     
+
+        vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+        vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ inputs.dept }} ${{ inputs.app-name }})
+
+        # 名前に -rest- と入っているときは、vnet 統合を削除してから resource を削除する
+        if [[ ${{ inputs.resource-group-name }} == *"-rest-"* ]]; then
+          resourceName=$(az functionapp list -g ${{ inputs.resource-group-name }} --query "[].name" -otsv)
+          az lock delete --name deleteLock \
+                         --resource-group ${vnetResourceGroupName} \
+                         --resource ${vnetName} \
+                         --resource-type Microsoft.Network/virtualNetworks
+          az functionapp vnet-integration remove -g ${{ inputs.resource-group-name }} -n ${resourceName} 
+        fi
+
+        az group delete -g ${{ inputs.resource-group-name }} --yes
+        
+        # 名前に -rest- と入っているときは、vnet 統合を削除したのでもういちどつける
+        if [[ ${{ inputs.resource-group-name }} == *"-rest-"* ]]; then
+          az lock create --name deleteLock \
+                          --resource-group ${vnetResourceGroupName} \
+                          --lock-type CanNotDelete \
+                          --resource-type Microsoft.Network/virtualNetworks \
+                          --resource ${vnetName}                
+        fi
+
+      shell: bash

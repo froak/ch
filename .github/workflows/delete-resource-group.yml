@@ -1,0 +1,56 @@
+name: Util/Delete Resource Group
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        required: true
+        default: "DEV"
+        type: choice
+        options:
+          - DEV
+          - QA
+          - STG
+          - PRD
+      region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - JPW
+      resource-group-name:
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  delete-resource-group:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Resource Group
+        id: delete-resource-group
+        uses: ./.github/actions/delete-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          resource-group-name: ${{ inputs.resource-group-name }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

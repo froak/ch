@@ -1,0 +1,48 @@
+name: "Tag Additional Info To Reousce Group"
+
+inputs:
+  resource-group-name:
+    required: true
+  ref-name:
+    required: true
+  commit-id: 
+    required: true
+  side:
+    required: true
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Tag Git Info
+      id: tag-git-info
+      run: |
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        refName=${{ github.ref_name }}
+        commitId=${{ github.sha }}
+        resourceGroupId=$(az group show -n ${{ inputs.resource-group-name }} --query id --output tsv)
+        az tag update --resource-id ${resourceGroupId} --operation Merge --tags refName=${{ inputs.ref-name }} commitId=${{ inputs.commit-id }}
+      shell: bash
+
+    - name: Tag Side Info
+      if: ${{ inputs.side != '' }}
+      id: tag-side-info
+      run: |
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        resourceGroupId=$(az group show -n ${{ inputs.resource-group-name }} --query id --output tsv)
+        az tag update --resource-id ${resourceGroupId} --operation Merge --tags Side=${{ inputs.side }}
+      shell: bash
+        

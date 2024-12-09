@@ -1,0 +1,193 @@
+name: Deploy/Deploy Cmn
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        required: true
+        default: "DEV"
+        type: choice
+        options:
+          - DEV
+          - QA
+          - STG
+          - PRD
+      region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - JPW
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-cmn:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Current DateTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Create Resource Group
+        id: create-resource-group
+        uses: ./.github/actions/create-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          desc-prefix: ${{ vars.CMN_RESOURCEGROUP_NAME_PREFIX }}
+          desc-suffix: ${{ steps.get-current-datetime.outputs.now }}
+          is-stateless: false
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Cmn Resources
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+
+          location=$(getLocation ${{ inputs.region }})
+
+          vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ vars.DEPT }} ${{ vars.APP_NAME }})
+          vnetId=`az network vnet show --name ${vnetName} --resource-group ${vnetResourceGroupName} --query id -otsv`
+
+          subnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          pepSubnetName=$(createSubnetName ${{ inputs.env }} ${{ vars.APP_NAME }} "pep" )
+          pepSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                    --vnet-name ${vnetName} \
+                                                    --query "[?name==\`${pepSubnetName}\`].id | [0]" -otsv)          
+
+          internalStorageAccountName=$(createStorageAccountName \
+                                    True \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    ${{ vars.INTERNAL_STORAGE_ACCOUNT_DESC }} \
+                                    ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+                                    )
+          kvName=$(createKeyVaultName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+          userAssignedIdentityName=$(createUserAssignedIdentityName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+          containerRegistryName=$(createContainerRegistryName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+          logAnalyticsWorkspaceName=$(createLogAnalyticsWorkspaceName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+
+          blobPrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    "blob-int")
+          queuePrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    "queue-int")
+          tablePrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    "table-int")                                  
+          filePrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME }} \
+                                    "file-int")                
+          kvPrivateEndpointName=$(createPrivateEndpointName \
+                                    ${{ inputs.region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}} \
+                                    "kv") 
+
+          echo "::group::deploycmn ================================================"
+          echo "::group::deploycmn location:${location}"
+          echo "::group::deploycmn vnetResourceGroupName:${vnetResourceGroupName}"
+          echo "::group::deploycmn vnetName:${vnetName}"
+          echo "::group::deploycmn vnetId:${vnetId}"
+          echo "::group::deploycmn subnetResourceGroupName:${subnetResourceGroupName}"
+          echo "::group::deploycmn pepSubnetName:${pepSubnetName}"
+          echo "::group::deploycmn pepSubnetId:${pepSubnetId}"
+          echo "::group::deploycmn moduleStorageAccountName:${moduleStorageAccountName}"
+          echo "::group::deploycmn internalStorageAccountName:${internalStorageAccountName}"
+          echo "::group::deploycmn kvName:${kvName}"
+          echo "::group::deploycmn userAssignedIdentityName:${userAssignedIdentityName}"
+          echo "::group::deploycmn containerRegistryName:${containerRegistryName}"
+          echo "::group::deploycmn logAnalyticsWorkspaceName:${logAnalyticsWorkspaceName}"
+          echo "::group::deploycmn blobPrivateEndpointName:${blobPrivateEndpointName}"
+          echo "::group::deploycmn queuePrivateEndpointName:${queuePrivateEndpointName}"
+          echo "::group::deploycmn filePrivateEndpointName:${filePrivateEndpointName}"
+          echo "::group::deploycmn tablePrivateEndpointName:${tablePrivateEndpointName}"
+          echo "::group::deploycmn kvPrivateEndpointName:${kvPrivateEndpointName}"
+          echo "::group::deploycmn================================================"
+
+          az deployment group create --resource-group ${{ steps.create-resource-group.outputs.resource-group-name }}  \
+          --mode Incremental \
+          --template-file ${{ github.workspace }}/infra/cmn_stack.bicep \
+          --parameters location=${location} \
+          env=${{ inputs.env }} \
+          vnetId=${vnetId} \
+          pepSubnetId=${pepSubnetId} \
+          internalStorageAccountName=${internalStorageAccountName} \
+          kvName=${kvName} \
+          managedIdName=${userAssignedIdentityName} \
+          logAnalyticsWorkspaceName=${logAnalyticsWorkspaceName} \
+          internalBlobPrivateEndpointName=${blobPrivateEndpointName} \
+          internalFilePrivateEndpointName=${filePrivateEndpointName} \
+          internalQueuePrivateEndpointName=${queuePrivateEndpointName} \
+          internalTablePrivateEndpointName=${tablePrivateEndpointName} \
+          kvPrivateEndpointName=${kvPrivateEndpointName} \
+          privateDnsZoneSubscriptionId=${{ vars.PRIVATE_DNS_ZONE_SUBSCRIPTION_ID }} \
+          privateDnsZoneResourceGroupName=${{ vars.PRIVATE_DNS_ZONE_RESOURCEGROUP_NAME }} \
+          privateDnsZoneBlob=${{ vars.PRIVATE_DNS_ZONE_BLOB }} \
+          privateDnsZoneFile=${{ vars.PRIVATE_DNS_ZONE_FILE }} \
+          privateDnsZoneQueue=${{ vars.PRIVATE_DNS_ZONE_QUEUE }} \
+          privateDnsZoneTable=${{ vars.PRIVATE_DNS_ZONE_TABLE }} \
+          privateDnsZoneKeyVault=${{ vars.PRIVATE_DNS_ZONE_KEYVAULT }} \
+          privateDnsZoneAic=${{ vars.AGW_DOMAIN }}
+
+        shell: bash
+
+      - name: Tag Addtional Info To Resource Group
+        id: tag-additional-info-to-resource-group
+        uses: ./.github/actions/tag-additional-info-to-resource-group
+        with:
+          resource-group-name: ${{ steps.create-resource-group.outputs.resource-group-name }}
+          ref-name: ${{ github.ref_name }}
+          commit-id: ${{ github.sha }}
+          side: ""
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

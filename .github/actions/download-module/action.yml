@@ -1,0 +1,111 @@
+name: "Download Modele from ModuleStorageAccount"
+
+inputs:
+  region:
+    required: true
+    type: string
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  prefix:
+    required: true
+    type: string
+  storage-account-desc:
+    required: true
+    type: string
+  storage-account-seq-number:
+    required: true
+    type: string
+  download-source-container:
+    required: true
+    type: string
+  download-pattern:
+    required: true
+    type: string
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  download-dir:
+    value: ${{ steps.download-module.outputs.download-dir }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Enabled Public Network Access Restriction Of ModuleStorageAccount
+      id: enabled-public-network-access
+      uses: ./.github/actions/change-public-network-access-restriction
+      with:
+        region: ${{ inputs.region }}
+        env: PRD
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        resource-type: ModuleStorageAccount
+        storage-account-desc: ${{ inputs.storage-account-desc }}
+        storage-account-seq-number: ${{ inputs.storage-account-seq-number }}
+        after: Enabled
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Download Module From ModuleStorageAccount
+      id: download-module
+      run: |
+        echo ==================================
+        echo "Download Module"
+        echo ==================================
+
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+        downloadDir=$(mktemp -d)
+        set +e
+        counter=0
+        while [[ $counter -lt 60 ]]
+        do
+            echo loop ${counter} times.
+            az storage blob download-batch --auth-mode login \
+                                --account-name ${{ steps.enabled-public-network-access.outputs.resource-name }} \
+                                -s ${{ inputs.download-source-container }} \
+                                --pattern ${{ inputs.download-pattern }}/* \
+                                -d ${downloadDir}
+            if [[ $? -ne 0 ]]; then
+                let counter++
+                sleep 1
+            else
+                break
+            fi
+        done        
+        set -e
+        echo "download-dir=${downloadDir}/${{ inputs.download-pattern }}" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Disabled Public Network Access Restriction Of ModuleStorageAccount
+      id: disabled-public-network-access
+      uses: ./.github/actions/change-public-network-access-restriction
+      with:
+        region: ${{ inputs.region }}
+        env: PRD
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        resource-type: ModuleStorageAccount
+        storage-account-desc: ${{ inputs.storage-account-desc }}
+        storage-account-seq-number: ${{ inputs.storage-account-seq-number }}
+        after: Disabled
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}

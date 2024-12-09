@@ -1,0 +1,216 @@
+name: Deploy/Deploy OpenAI
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        required: true
+        default: "DEV"
+        type: choice
+        options:
+          - DEV
+          - QA
+          - STG
+          - PRD
+      region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - JPW
+      oai-region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - WUS
+          - CAE
+          - JPE
+      suffix:
+        required: true
+        type: choice
+        options:
+          - "chatBasic"
+          - "chatAdvance"
+      model:
+        required: true
+        type: choice
+        options:
+          - "gpt-35-turbo"
+          - "gpt-35-turbo-16k"
+          - "gpt-4"
+          - "gpt-4-32k"
+          - "gpt-4o"
+      version:
+        required: true
+        type: choice
+        options:
+          - "0125"
+          - "1106"
+          - "0613"
+          - "0301"
+          - "2024-05-13"
+      does-deploy-account:
+        required: true
+        type: boolean
+        default: true
+      does-deploy-model:
+        required: true
+        type: boolean
+        default: true
+      capacity:
+        required: true
+        type: number
+      is-new-resource-group:
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-oai:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Current DateTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Create Resource Group
+        id: create-resource-group
+        uses: ./.github/actions/create-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          desc-prefix: ${{ vars.OAI_RESOURCEGROUP_NAME_PREFIX }}
+          desc-suffix: ${{ steps.get-current-datetime.outputs.now }}
+          is-stateless: ${{ inputs.is-new-resource-group }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy OpenAI
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+
+          location=$(getLocation ${{ inputs.region }})
+          oaiLocation=$(getLocation ${{ inputs.oai-region }})
+
+          vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ vars.DEPT }} ${{ vars.APP_NAME }})
+          vnetId=`az network vnet show --name ${vnetName} --resource-group ${vnetResourceGroupName} --query id -otsv`
+
+          subnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          pepSubnetName=$(createSubnetName ${{ inputs.env }} ${{ vars.APP_NAME }} "pep" )
+          pepSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                    --vnet-name ${vnetName} \
+                                                    --query "[?name==\`${pepSubnetName}\`].id | [0]" -otsv)          
+
+          managedIdResourceGroupNamePrefix=$(createResourceGroupName \
+                                                ${{ inputs.region }} \
+                                                ${{ inputs.env }} \
+                                                ${{ vars.DEPT }} \
+                                                ${{ vars.APP_NAME}} \
+                                                ${{ vars.MANAGED_ID_RESOURCEGROUP_NAME_PREFIX}})
+          managedIdResourceGroupName=$(getResourceGroupName ${managedIdResourceGroupNamePrefix})
+          userAssignedIdentityName=$(createUserAssignedIdentityName \
+                                      ${{ inputs.region }} \
+                                      ${{ inputs.env }} \
+                                      ${{ vars.DEPT }} \
+                                      ${{ vars.APP_NAME}}
+                                      )
+
+          logAnalyticsWorkspaceResourceGroupNamePrefix=$(createResourceGroupName \
+                                                    ${{ inputs.region}} \
+                                                    ${{ inputs.env }} \
+                                                    ${{ vars.DEPT }} \
+                                                    ${{ vars.APP_NAME}} \
+                                                    ${{ vars.LAW_RESOURCEGROUP_NAME_PREFIX }})
+          logAnalyticsWorkspaceResourceGroupName=$(getResourceGroupName ${logAnalyticsWorkspaceResourceGroupNamePrefix})
+          logAnalyticsWorkspaceName=$(createLogAnalyticsWorkspaceName \
+                                    ${{ inputs.region}} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+
+          privateDnsZoneResourceGroupName=${{ vars.PRIVATE_DNS_ZONE_RESOURCEGROUP_NAME }}
+          privateEndpointName=$(createPrivateEndpointName ${{ inputs.region}} \
+                                                          ${{ inputs.env }} \
+                                                          ${{ vars.DEPT }} \
+                                                          ${{ vars.APP_NAME}} \
+                                                          "oai-${{ steps.get-current-datetime.outputs.now }}"
+                                                          )
+          if [ ${{ inputs.does-deploy-account }} == "true" ]; then
+            cognitiveServiceName=$(createOaiName \
+                                    ${{ inputs.oai-region }} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME }} \
+                                    ${{ inputs.suffix }}-${{ steps.get-current-datetime.outputs.now }})
+          else
+            cognitiveServiceName=$(az cognitiveservices account list \
+                                      -g ${{ steps.create-resource-group.outputs.resource-group-name }} \
+                                      --query "[?contains(name,'${{ inputs.suffix }}')].name" \
+                                      -otsv
+                                    )
+          fi
+          chatGptModelName=${{ inputs.model }}
+          chatGptDeploymentName=${{ inputs.model }}_${{ inputs.version }}
+
+          echo "::group::deployoai ================================================"
+          echo "::group::deployoai resourceGroupName:${{ steps.create-resource-group.outputs.resource-group-name }}"
+          echo "::group::deployoai location:${location}"
+          echo "::group::deployoai oaiLocation:${oaiLocation}"
+          echo "::group::deployoai vnetResourceGroupName:${vnetResourceGroupName}"
+          echo "::group::deployoai vnetName:${vnetName}"
+          echo "::group::deployoai vnetId:${vnetId}"
+          echo "::group::deployoai subnetResourceGroupName:${subnetResourceGroupName}"
+          echo "::group::deployoai pepSubnetName:${pepSubnetName}"
+          echo "::group::deployoai pepSubnetId:${pepSubnetId}"
+          echo "::group::deployoai managedIdResourceGroupNamePrefix:${managedIdResourceGroupNamePrefix}"
+          echo "::group::deployoai managedIdResourceGroupName:${managedIdResourceGroupName}"
+          echo "::group::deployoai userAssignedIdentityName:${userAssignedIdentityName}"
+          echo "::group::deployoai logAnalyticsWorkspaceResourceGroupNamePrefix:${logAnalyticsWorkspaceResourceGroupNamePrefix}"
+          echo "::group::deployoai logAnalyticsWorkspaceResourceGroupName:${logAnalyticsWorkspaceResourceGroupName}"
+          echo "::group::deployoai logAnalyticsWorkspaceName:${logAnalyticsWorkspaceName}"
+          echo "::group::deployoai privateDnsZoneResourceGroupName:${privateDnsZoneResourceGroupName}"
+          echo "::group::deployoai privateEndpointName:${privateEndpointName}"
+          echo "::group::deployoai cognitiveServiceName:${cognitiveServiceName}"
+          echo "::group::deployoai chatGptModelName:${chatGptModelName}"
+          echo "::group::deployoai chatGptDeploymentName:${chatGptDeploymentName}"
+          echo "::group::deployoai ================================================"
+
+          az deployment group create --resource-group ${{ steps.create-resource-group.outputs.resource-group-name }} \
+                                      --mode Incremental \
+                                      --template-file ${{ github.workspace }}/infra/oai_stack.bicep \
+                                      --parameters location=${location} \
+                                                   oaiLocation=${oaiLocation} \
+                                                   userManagedIdName=${userAssignedIdentityName} \
+                                                   userManagedIdRGName=${managedIdResourceGroupName} \
+                                                   kind="OpenAI" \
+                                                   publicNetworkAccess="Disabled" \
+                                                   pepSubnetId=${pepSubnetId} \
+                                                   privateEndpointName=${privateEndpointName} \
+                                                   privateDnsZoneName=${{ vars.PRIVATE_DNS_ZONE_OAI }} \
+                                                   privateDnsZoneSubscriptionId=${{ vars.PRIVATE_DNS_ZONE_SUBSCRIPTION_ID }} \
+                                                   privateDnsZoneResourceGroupName=${privateDnsZoneResourceGroupName} \
+                                                   lawResouceGroupName=${logAnalyticsWorkspaceResourceGroupName} \
+                                                   lawName=${logAnalyticsWorkspaceName} \
+                                                   name=${cognitiveServiceName} \
+                                                   chatGptModelName=${chatGptModelName} \
+                                                   chatGptDeploymentName=${chatGptDeploymentName} \
+                                                   capacity=${{ inputs.capacity }} \
+                                                   version=${{ inputs.version }} \
+                                                   doesAccountDeploy=${{ inputs.does-deploy-account }} \
+                                                   doesDeploymentDepoly=${{ inputs.does-deploy-model }}
+        shell: bash

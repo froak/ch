@@ -1,0 +1,126 @@
+name: "Upload Module To Blob"
+
+inputs:
+  region:
+    required: true
+    type: string
+  env:
+    required: true
+    type: string
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  prefix:
+    required: true
+    type: string
+  # destination-account:
+  #   required: true
+  #   type: string
+  resource-type:
+    required: true
+    type: choice
+    options: 
+      - ModuleStorageAccount
+      - InternalStorageAccount
+  destination-container:
+    required: true
+    type: string
+  destination-dir:
+    required: true
+    type: string
+  source-dir:
+    required: true
+    type: string
+  storage-account-desc:
+    required: true
+    type: string
+  storage-account-seq-number:
+    required: true
+    type: string
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  upload-destination-dir:
+    value: ${{ steps.upload-module-to-blob.outputs.upload-destination-dir }}
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Azure CLI Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ inputs.azure-client-id }}
+        tenant-id: ${{ inputs.azure-tenant-id }}
+        subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Enabled Public Network Access Restriction Of ${{ inputs.resource-type }}
+      id: enabled-public-network-access
+      uses: ./.github/actions/change-public-network-access-restriction
+      with:
+        region: ${{ inputs.region }}
+        env: ${{ inputs.env }}
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        resource-type: ${{ inputs.resource-type }}
+        storage-account-desc: ${{ inputs.storage-account-desc }}
+        storage-account-seq-number: ${{ inputs.storage-account-seq-number }}
+        after: Enabled
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Upload Module To Blob
+      id: upload-module-to-blob
+      run: |
+        echo ==================================
+        echo "Upload Module to Blob"
+        echo ==================================
+        source ${{ github.workspace }}/.github/scripts/shell.sh     
+        set +e
+        counter=0
+        while [[ $counter -lt 60 ]]
+        do
+            echo loop ${counter} times.
+            az storage blob upload-batch --auth-mode login \
+                                         --account-name ${{ steps.enabled-public-network-access.outputs.resource-name }} \
+                                         -d ${{ inputs.destination-container }}/${{ inputs.destination-dir }} \
+                                         -s ${{ inputs.source-dir }} 
+
+            if [[ $? -ne 0 ]]; then
+                let counter++
+                sleep 1
+            else
+                break
+            fi
+        done        
+        set -e
+        echo ${{ inputs.destination-container }}/${{ inputs.destination-dir }}
+        echo "upload-destination-dir=${{ inputs.destination-container }}/${{ inputs.destination-dir }}" >> $GITHUB_OUTPUT                                       
+      shell: bash
+
+    - name: Disabled Public Network Access Restriction Of ${{ inputs.resource-type }}
+      id: disabled-public-network-access
+      uses: ./.github/actions/change-public-network-access-restriction
+      with:
+        region: ${{ inputs.region }}
+        env: ${{ inputs.env }}
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        resource-type: ${{ inputs.resource-type }}
+        storage-account-desc: ${{ inputs.storage-account-desc }}
+        storage-account-seq-number: ${{ inputs.storage-account-seq-number }}
+        after: Disabled
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}

@@ -1,0 +1,14 @@
+name: 'Get Current Datetime'
+
+outputs:
+  now:
+    value: ${{ steps.get-current-datetime.outputs.now }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get Current Datetime
+      id: get-current-datetime
+      run: |
+          echo "now=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
+      shell: bash

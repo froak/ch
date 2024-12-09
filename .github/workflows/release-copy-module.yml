@@ -1,0 +1,132 @@
+name: Release/Copy Module
+on:
+  push:
+    tags:        
+      - 'v[0-9]*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  copy-rest-module:
+    runs-on: ubuntu-latest
+    environment: BUILD
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch Build Version
+        id: fetch-rest-build-version
+        uses: ./.github/actions/fetch-build-version
+        with:
+          region: JPE
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          target: rest
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          source-branch-name: main
+          build-version: Latest
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: Download Module from Builds
+        id: download-module-from-builds
+        uses: ./.github/actions/download-module
+        with:
+          region: JPE
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          download-source-container: builds
+          download-pattern: ${{ steps.fetch-rest-build-version.outputs.build-version }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} 
+
+      - name: Upload Module To modules
+        id: upload-module-to-modules
+        uses: ./.github/actions/upload-module-to-blob
+        with:
+          region: JPE
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          resource-type: ModuleStorageAccount
+          destination-container: builds
+          destination-dir: "${{ github.ref_name }}_rest"
+          source-dir: ${{ steps.download-module-from-builds.outputs.download-dir }}/
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}          
+
+  copy-front-module:
+    runs-on: ubuntu-latest
+    environment: BUILD
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch Build Version
+        id: fetch-rest-build-version
+        uses: ./.github/actions/fetch-build-version
+        with:
+          region: JPE
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          target: front
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          source-branch-name: main
+          build-version: Latest
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: Download Module from Builds
+        id: download-module-from-builds
+        uses: ./.github/actions/download-module
+        with:
+          region: JPE
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          download-source-container: builds
+          download-pattern: ${{ steps.fetch-rest-build-version.outputs.build-version }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} 
+
+      - name: Upload Module To modules
+        id: upload-module-to-modules
+        uses: ./.github/actions/upload-module-to-blob
+        with:
+          region: JPE
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          resource-type: ModuleStorageAccount
+          destination-container: builds
+          destination-dir: "${{ github.ref_name }}_front"
+          source-dir: ${{ steps.download-module-from-builds.outputs.download-dir }}/
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}                   

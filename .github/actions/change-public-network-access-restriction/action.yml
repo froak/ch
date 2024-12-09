@@ -1,0 +1,156 @@
+name: "Change Public Netork Access Restriction"
+
+inputs:
+  region:
+    required: true
+    type: string
+  env:
+    required: true
+    type: string
+  dept:
+    required: true
+    type: string
+  app-name:
+    required: true
+    type: string
+  prefix:
+    required: true
+    type: string
+  resource-type:
+    required: true
+    type: choice
+    options: 
+      - ModuleStorageAccount
+      - InternalStorageAccount
+  storage-account-desc:
+    type: string
+  storage-account-seq-number:
+    type: string      
+  after:
+    required: true
+    type: choice
+    options:
+      - Enabled
+      - Disabled
+  azure-client-id:
+    required: true
+  azure-tenant-id:
+    required: true
+  azure-subscription-id:
+    required: true
+
+outputs:
+  resource-group-name:
+    value: ${{ steps.change-network-restriction.outputs.resource-group-name }}
+  resource-name:
+    value: ${{ steps.change-network-restriction.outputs.resource-name }}
+
+
+runs:
+  using: "composite"
+  steps:
+    # - name: Checkout
+    #   uses: actions/checkout@v4  
+
+    - name: Fetch Resource Group Name
+      id: fetch-resource-group-name
+      uses: ./.github/actions/fetch-resource-group-name
+      with:
+        region: ${{ inputs.region }}
+        env: ${{ inputs.env }}
+        dept: ${{ inputs.dept }}
+        app-name: ${{ inputs.app-name }}
+        prefix: ${{ inputs.prefix }}
+        azure-client-id: ${{ inputs.azure-client-id }}
+        azure-tenant-id: ${{ inputs.azure-tenant-id }}
+        azure-subscription-id: ${{ inputs.azure-subscription-id }}
+
+    - name: Echo Resource Group Name
+      run: |
+        echo ${{ steps.fetch-resource-group-name.outputs.resource-group-name }}
+      shell: bash
+
+    - name:  Change Network Restriction
+      id: change-network-restriction
+      run: |
+        echo ==================================
+        echo "${{ inputs.after }} Network Restriction of ${{ inputs.resource-type}}"
+        echo ==================================
+        
+        source ${{ github.workspace }}/.github/scripts/shell.sh
+
+        if [ ${{ inputs.after}} = "Enabled" ]; then
+          defaultAction=Allow
+        else
+          defaultAction=Deny
+        fi
+
+        if [ ${{ inputs.resource-type}} = "ModuleStorageAccount" ]; then
+          resourceType="Microsoft.Storage/storageAccounts"
+          resourceName=$(createStorageAccountName \
+                            True \
+                            ${{inputs.region}} \
+                            ${{inputs.env}} \
+                            ${{inputs.dept}} \
+                            ${{inputs.app-name}} \
+                            ${{inputs.storage-account-desc}} \
+                            ${{inputs.storage-account-seq-number}})
+                            
+        elif [ ${{ inputs.resource-type}} = "InternalStorageAccount" ]; then
+          resourceType="Microsoft.Storage/storageAccounts"
+          resourceName=$(createStorageAccountName \
+                            True \
+                            ${{inputs.region}} \
+                            ${{inputs.env}} \
+                            ${{inputs.dept}} \
+                            ${{inputs.app-name}} \
+                            ${{inputs.storage-account-desc}} \
+                            ${{inputs.storage-account-seq-number}})     
+        fi
+
+        echo "update network-rule"
+        az storage account update -g ${{ steps.fetch-resource-group-name.outputs.resource-group-name }} \
+                                  -n ${resourceName} \
+                                  --public-network-access ${{ inputs.after }} \
+                                  --default-action ${defaultAction} \
+                                  -o none
+
+        echo "wait for succeeded"
+        az resource wait -n ${resourceName} \
+                         -g ${{ steps.fetch-resource-group-name.outputs.resource-group-name }} \
+                         --resource-type ${resourceType} \
+                         --updated \
+                         --interval 1 \
+                         --timeout 20
+
+        # loop until succeeded or 15 retries
+        # counter=0
+        # status=$(az resource show -n ${resourceName} \
+        #                           -g ${{ steps.fetch-resource-group-name.outputs.resource-group-name }} \
+        #                           --resource-type ${resourceType} \
+        #                           --query properties.provisioningState \
+        #                           -otsv)
+
+        # while [[ $status != 'Succeeded' && counter -lt 15 ]]
+        # do
+        #     echo "retry ${counter} times"
+        #     sleep 1 # wait for 1 second
+        #     status=$(az resource show -n ${resourceName} \
+        #                               -g ${{ steps.fetch-resource-group-name.outputs.resource-group-name }} \
+        #                               --resource-type ${resourceType} \
+        #                               --query properties.provisioningState \
+        #                               -otsv)
+        #     COUNTER=$((counter+1))
+        # done                                  
+        # if [[ $status = "Succeeded" ]]
+        # then
+        #   echo "The operation finished successfully"
+        # else
+        #   echo "The operation didn't finish within the expected time"
+        #   exit 1
+        # fi
+
+        # Output 
+        echo "resource-group-name=${{ steps.fetch-resource-group-name.outputs.resource-group-name }}" >> $GITHUB_OUTPUT
+        echo "resource-name=${resourceName}" >> $GITHUB_OUTPUT
+      shell: bash

@@ -1,0 +1,860 @@
+name: Deploy/Deploy Stacks
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        required: true
+        default: "DEV"
+        type: choice
+        options:
+          - DEV
+          - QA
+          - STG
+          - PRD
+      region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - JPW
+      swa-region:
+        required: true
+        default: "EAS"
+        type: string
+      chatbasic-region:
+        required: true
+        default: "JPE"
+        type: choice
+        options:
+          - JPE
+          - CAE
+      chatadvance-region:
+        required: true
+        default: JPE
+        type: choice
+        options:
+          - JPE
+          - WUS
+      chatbasic-model-name:
+        required: true
+        type: string
+      chatadvance-model-name:
+        required: true
+        type: string
+      which-stack-deploy:
+        required: true
+        type: string
+        default: '{"rest":"true","front":"true","agw":"true"}'
+      does-update-dns:
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  prepare-rest-module-for-deploy:
+    if: ${{ fromJSON(github.event.inputs.which-stack-deploy)['rest'] == 'true'}}
+    runs-on: ubuntu-latest
+    environment: BUILD
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch Build Version
+        id: fetch-rest-build-version
+        uses: ./.github/actions/fetch-build-version
+        with:
+          region: ${{ inputs.region }}
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          target: rest
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          source-branch-name: ${{ github.ref_name }}
+          build-version: Latest
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Echo Build Version
+        run: |
+          echo "${{ steps.fetch-rest-build-version.outputs.build-version }}"
+        shell: bash
+
+      - name: Download Module from Builds
+        id: download-module-from-builds
+        uses: ./.github/actions/download-module
+        with:
+          region: ${{ inputs.region }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          download-source-container: builds
+          download-pattern: ${{ steps.fetch-rest-build-version.outputs.build-version }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.fetch-rest-build-version.outputs.build-version }}
+          path: ${{ steps.download-module-from-builds.outputs.download-dir }}/
+          retention-days: 1
+
+  rest-deploy:
+    runs-on: ubuntu-latest
+    needs: prepare-rest-module-for-deploy
+    environment: ${{ inputs.env }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Artifact
+        id: download-artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*_rest*"
+
+      - name: Get Artifact Name
+        id: get-artifact-name
+        run: |
+          artifactName=$(find ./ -type d -name '*_rest*')
+          echo "artifact-name=${artifactName}" >> $GITHUB_OUTPUT
+
+      - name: Fetch Side Tag
+        id: fetch-side-tag
+        uses: ./.github/actions/fetch-side-tag
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.REST_RESOURCEGROUP_NAME_PREFIX }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload Module To modules
+        id: upload-module-to-modules
+        uses: ./.github/actions/upload-module-to-blob
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.CMN_RESOURCEGROUP_NAME_PREFIX }}
+          resource-type: InternalStorageAccount
+          destination-container: ${{ vars.DEPLOY_MODULES_STORED_CONTAINER }}
+          destination-dir: ${{ steps.get-artifact-name.outputs.artifact-name }}
+          source-dir: ${{steps.download-artifact.outputs.download-path}}/${{ steps.get-artifact-name.outputs.artifact-name }}
+          storage-account-desc: ${{ vars.INTERNAL_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get Current DateTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Create Resource Group
+        id: create-resource-group
+        uses: ./.github/actions/create-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          desc-prefix: ${{ vars.REST_RESOURCEGROUP_NAME_PREFIX }}
+          desc-suffix: ${{ steps.get-current-datetime.outputs.now }}
+          is-stateless: true
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Rest Stack
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+
+          location=$(getLocation ${{ inputs.region }})
+
+          vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ vars.DEPT }} ${{ vars.APP_NAME }})
+          vnetId=`az network vnet show --name ${vnetName} --resource-group ${vnetResourceGroupName} --query id -otsv`
+
+          subnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          pepSubnetName=$(createSubnetName ${{ inputs.env }} ${{ vars.APP_NAME }} "pep" )
+          pepSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                    --vnet-name ${vnetName} \
+                                                    --query "[?name==\`${pepSubnetName}\`].id | [0]" -otsv)          
+          outboundSubnetName=$(createSubnetName \
+                                ${{ inputs.env }} \
+                                ${{ vars.APP_NAME }} \
+                                "rest${{ steps.fetch-side-tag.outputs.side }}")
+          outboundSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                    --vnet-name ${vnetName} \
+                                                    --query "[?name==\`${outboundSubnetName}\`].id | [0]" -otsv)
+
+          managedIdResourceGroupNamePrefix=$(createResourceGroupName \
+                                                ${{ inputs.region }} \
+                                                ${{ inputs.env }} \
+                                                ${{ vars.DEPT }} \
+                                                ${{ vars.APP_NAME}} \
+                                                ${{ vars.MANAGED_ID_RESOURCEGROUP_NAME_PREFIX}})
+          managedIdResourceGroupName=$(getResourceGroupName ${managedIdResourceGroupNamePrefix})
+          userAssignedIdentityName=$(createUserAssignedIdentityName \
+                                      ${{ inputs.region }} \
+                                      ${{ inputs.env }} \
+                                      ${{ vars.DEPT }} \
+                                      ${{ vars.APP_NAME}}
+                                      )
+
+          logAnalyticsWorkspaceResourceGroupNamePrefix=$(createResourceGroupName \
+                                                    ${{ inputs.region}} \
+                                                    ${{ inputs.env }} \
+                                                    ${{ vars.DEPT }} \
+                                                    ${{ vars.APP_NAME}} \
+                                                    ${{ vars.LAW_RESOURCEGROUP_NAME_PREFIX }})
+          logAnalyticsWorkspaceResourceGroupName=$(getResourceGroupName ${logAnalyticsWorkspaceResourceGroupNamePrefix})
+          logAnalyticsWorkspaceName=$(createLogAnalyticsWorkspaceName \
+                                    ${{ inputs.region}} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+
+          internalStorageResourceGroupNamePrefix=$(createResourceGroupName \
+                                                    ${{ inputs.region}} \
+                                                    ${{ inputs.env }} \
+                                                    ${{ vars.DEPT }} \
+                                                    ${{ vars.APP_NAME}} \
+                                                    ${{ vars.INTERNAL_STORAGE_ACCOUNT_RESOURCEGROUP_NAME_PREFIX }})
+          internalStorageResourceGroupName=$(getResourceGroupName ${internalStorageResourceGroupNamePrefix})
+          internalStorageAccountName=$(createStorageAccountName \
+                            True \
+                            ${{ inputs.region}} \
+                            ${{ inputs.env }} \
+                            ${{ vars.DEPT }} \
+                            ${{ vars.APP_NAME}} \
+                            ${{ vars.INTERNAL_STORAGE_ACCOUNT_DESC }} \
+                            ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }})
+          connectionString=$(az storage account show-connection-string \
+                                                --name ${internalStorageAccountName} \
+                                                --resource-group ${internalStorageResourceGroupName} \
+                                                -otsv )
+          modulePath="https://${internalStorageAccountName}.blob.core.windows.net/${{ steps.upload-module-to-modules.outputs.upload-destination-dir }}/rest.zip"
+
+          privateDnsZoneResourceGroupName=${{ vars.PRIVATE_DNS_ZONE_RESOURCEGROUP_NAME }}
+          privateEndpointName=$(createPrivateEndpointName ${{ inputs.region}} \
+                                                          ${{ inputs.env }} \
+                                                          ${{ vars.DEPT }} \
+                                                          ${{ vars.APP_NAME}} \
+                                                          "rest-${{ steps.get-current-datetime.outputs.now }}"
+                                                          )
+          # function の名前が最大 32 文字で、yyyyMMddHHmmss を入れると、32 文字を超えてしまうのでここだけ BuildId を入れておく
+          funcName=$(createFunctionsName ${{ inputs.region}} \
+                                         ${{ inputs.env }} \
+                                         ${{ vars.DEPT }} \
+                                         ${{ vars.APP_NAME}} \
+                                         ${{ github.run_number }})
+          chatBasicOaiResourceGroupNamePrefix=$(createResourceGroupName \
+                                              ${{ inputs.chatbasic-region}} \
+                                              ${{ inputs.env }} \
+                                              ${{ vars.DEPT }} \
+                                              ${{ vars.APP_NAME}} \
+                                              ${{ vars.OAI_RESOURCEGROUP_NAME_PREFIX }})
+          chatBasicOaiResourceGroupName=$(getResourceGroupName ${chatBasicOaiResourceGroupNamePrefix})                                      
+          chatAdvanceOaiResourceGroupNamePrefix=$(createResourceGroupName \
+                                              ${{ inputs.chatadvance-region }} \
+                                              ${{ inputs.env }} \
+                                              ${{ vars.DEPT }} \
+                                              ${{ vars.APP_NAME }} \
+                                              ${{ vars.OAI_RESOURCEGROUP_NAME_PREFIX }})
+          chatAdvanceOaiResourceGroupName=$(getResourceGroupName ${chatAdvanceOaiResourceGroupNamePrefix}) 
+          oaiNameChatBasic=$(az cognitiveservices list -g ${chatBasicOaiResourceGroupName} \
+                                                       --query "[?contains(name,'-chatBasic-')].name" \
+                                                       -otsv)
+          oaiNameChatAdvance=$(az cognitiveservices list -g ${chatAdvanceOaiResourceGroupName} \
+                                                         --query "[?contains(name,'-chatAdvance-')].name" \
+                                                         -otsv)
+
+          echo ================================================
+          echo location:${location}
+          echo vnetResourceGroupName:${vnetResourceGroupName}
+          echo vnetName:${vnetName}
+          echo vnetId:${vnetId}
+          echo subnetResourceGroupName:${subnetResourceGroupName}
+          echo pepSubnetName:${pepSubnetName}
+          echo pepSubnetId:${pepSubnetId}
+          echo outboundSubnetName: ${outboundSubnetName}
+          echo outboundSubnetId: ${outboundSubnetId}
+          echo managedIdResourceGroupNamePrefix:${managedIdResourceGroupNamePrefix}
+          echo managedIdResourceGroupName:${managedIdResourceGroupName}
+          echo userAssignedIdentityName:${userAssignedIdentityName}
+          echo logAnalyticsWorkspaceResourceGroupNamePrefix:${logAnalyticsWorkspaceResourceGroupNamePrefix}
+          echo logAnalyticsWorkspaceResourceGroupName:${logAnalyticsWorkspaceResourceGroupName}
+          echo logAnalyticsWorkspaceName:${logAnalyticsWorkspaceName}
+          echo internalStorageResourceGroupNamePrefix:${internalStorageResourceGroupNamePrefix}
+          echo internalStorageResourceGroupName:${internalStorageResourceGroupName}
+          echo internalStorageAccountName:${internalStorageAccountName}
+          echo connectionString: ${connectionString}
+          echo modulePath: ${modulePath}
+          echo privateDnsZoneResourceGroupName:${privateDnsZoneResourceGroupName}
+          echo privateEndpointName:${privateEndpointName}
+          echo funcName:${funcName}
+          echo chatBasicOaiResourceGroupNamePrefix:${chatBasicOaiResourceGroupNamePrefix}
+          echo chatBasicOaiResourceGroupName:${chatBasicOaiResourceGroupName}
+          echo chatAdvanceOaiResourceGroupNamePrefix:${chatAdvanceOaiResourceGroupNamePrefix}
+          echo chatAdvanceOaiResourceGroupName:${chatAdvanceOaiResourceGroupName}
+          echo oaiNameChatBasic:${oaiNameChatBasic}
+          echo oaiNameChatAdvance:${oaiNameChatAdvance}
+          echo ================================================
+
+          az deployment group create --resource-group ${{ steps.create-resource-group.outputs.resource-group-name }} \
+                                      --mode Incremental \
+                                      --template-file ${{ github.workspace }}/infra/rest_stack.bicep \
+                                      --parameters env=${{ inputs.env }} \
+                                                   location=${location} \
+                                                   functionName=${funcName} \
+                                                   modulePath=${modulePath} \
+                                                   connectionString=${connectionString} \
+                                                   pepSubnetId=${pepSubnetId} \
+                                                   outboundSubnetId=${outboundSubnetId} \
+                                                   lawName=${logAnalyticsWorkspaceName} \
+                                                   lawResouceGroupName=${logAnalyticsWorkspaceResourceGroupName} \
+                                                   userManagedIdName=${userAssignedIdentityName} \
+                                                   userManagedIdRGName=${managedIdResourceGroupName} \
+                                                   internalStorageAccountResouceGroupName=${internalStorageResourceGroupName} \
+                                                   internalStorageAccountName=${internalStorageAccountName} \
+                                                   applicationClientId=${{ vars.APPLICATION_CLIENT_ID }} \
+                                                   privateEndpointName=${privateEndpointName} \
+                                                   privateDnsZoneSubscriptionId=${{ vars.PRIVATE_DNS_ZONE_SUBSCRIPTION_ID }} \
+                                                   privateDnsZoneResourceGroupName=${privateDnsZoneResourceGroupName} \
+                                                   privateDnsZoneName=${{ vars.PRIVATE_DNS_ZONE_WEBSITES }} \
+                                                   oaiNameChatBasic=${oaiNameChatBasic} \
+                                                   oaiNameChatAdvance=${oaiNameChatAdvance} \
+                                                   oaiChatBasicModelName=${{ inputs.chatbasic-model-name }} \
+                                                   oaiChatAdvanceModelName=${{ inputs.chatadvance-model-name }}
+        shell: bash
+
+      - name: Tag Addtional Info To Resource Group
+        id: tag-additional-info-to-resource-group
+        uses: ./.github/actions/tag-additional-info-to-resource-group
+        with:
+          resource-group-name: ${{ steps.create-resource-group.outputs.resource-group-name }}
+          ref-name: ${{ github.ref_name }}
+          commit-id: ${{ github.sha }}
+          side: ${{ steps.fetch-side-tag.outputs.side }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  prepare-front-module-for-deploy:
+    if: ${{ fromJSON(github.event.inputs.which-stack-deploy)['front'] == 'true'}}
+    runs-on: ubuntu-latest
+    environment: BUILD
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch Build Version
+        id: fetch-front-build-version
+        uses: ./.github/actions/fetch-build-version
+        with:
+          region: ${{ inputs.region }}
+          env: PRD
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          target: front
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          source-branch-name: ${{ github.ref_name }}
+          build-version: Latest
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Echo Build Version
+        run: |
+          echo "${{ steps.fetch-front-build-version.outputs.build-version }}"
+        shell: bash
+
+      - name: Download Module from Builds
+        id: download-module-from-builds
+        uses: ./.github/actions/download-module
+        with:
+          region: ${{ inputs.region }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.MDL_RESOURCEGROUP_NAME_PREFIX }}
+          storage-account-desc: ${{ vars.MODULE_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          download-source-container: builds
+          download-pattern: ${{ steps.fetch-front-build-version.outputs.build-version }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.fetch-front-build-version.outputs.build-version }}
+          path: ${{ steps.download-module-from-builds.outputs.download-dir }}/
+          retention-days: 1
+
+  front-deploy:
+    runs-on: ubuntu-latest
+    needs: prepare-front-module-for-deploy
+    environment: ${{ inputs.env }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download Artifact
+        id: download-artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*_front*"
+
+      - name: Get Artifact Name
+        id: get-artifact-name
+        run: |
+          artifactName=$(find ./ -type d -name '*_front*')
+          echo "artifact-name=${artifactName}" >> $GITHUB_OUTPUT
+
+      - name: Fetch Side Tag
+        id: fetch-side-tag
+        uses: ./.github/actions/fetch-side-tag
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.FRONT_RESOURCEGROUP_NAME_PREFIX }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload Module To modules
+        id: upload-module-to-modules
+        uses: ./.github/actions/upload-module-to-blob
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.CMN_RESOURCEGROUP_NAME_PREFIX }}
+          resource-type: InternalStorageAccount
+          destination-container: ${{ vars.DEPLOY_MODULES_STORED_CONTAINER }}
+          destination-dir: ${{ steps.get-artifact-name.outputs.artifact-name }}
+          source-dir: ${{steps.download-artifact.outputs.download-path}}/${{ steps.get-artifact-name.outputs.artifact-name }}
+          storage-account-desc: ${{ vars.INTERNAL_STORAGE_ACCOUNT_DESC }}
+          storage-account-seq-number: ${{ vars.STORAGE_ACCOUNT_SEQNUMBER }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get Current DateTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Create Resource Group
+        id: create-resource-group
+        uses: ./.github/actions/create-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          desc-prefix: ${{ vars.FRONT_RESOURCEGROUP_NAME_PREFIX }}
+          desc-suffix: ${{ steps.get-current-datetime.outputs.now }}
+          is-stateless: true
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Front Stack
+        id: deploy-front-stack
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+
+          location=$(getLocation ${{ inputs.region }})
+          swaLocation=$(getLocation ${{ inputs.swa-region }})
+
+          vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ vars.DEPT }} ${{ vars.APP_NAME }})
+          vnetId=`az network vnet show --name ${vnetName} --resource-group ${vnetResourceGroupName} --query id -otsv`
+
+          subnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          pepSubnetName=$(createSubnetName ${{ inputs.env }} ${{ vars.APP_NAME }} "pep" )
+          pepSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                    --vnet-name ${vnetName} \
+                                                    --query "[?name==\`${pepSubnetName}\`].id | [0]" -otsv)          
+
+          privateDnsZoneResourceGroupName=${{ vars.PRIVATE_DNS_ZONE_RESOURCEGROUP_NAME }}
+          privateEndpointName=$(createPrivateEndpointName ${{ inputs.region }} \
+                                                          ${{ inputs.env }} \
+                                                          ${{ vars.DEPT }} \
+                                                          ${{ vars.APP_NAME}} \
+                                                          "stapp-${{ steps.get-current-datetime.outputs.now }}"
+                                                          )
+          swaName=$(createSwaName  ${{ inputs.region }} \
+                                   ${{ inputs.env }} \
+                                   ${{ vars.DEPT }} \
+                                   ${{ vars.APP_NAME}} \
+                                   ${{ steps.get-current-datetime.outputs.now }}
+                                   )                                                         
+          echo ================================================
+          echo location:${location}
+          echo swaLocatoin:${swaLocation}
+          echo vnetResourceGroupName:${vnetResourceGroupName}
+          echo vnetName:${vnetName}
+          echo vnetId:${vnetId}
+          echo subnetResourceGroupName:${subnetResourceGroupName}
+          echo pepSubnetName:${pepSubnetName}
+          echo pepSubnetId:${pepSubnetId}
+          echo privateEndpointName:${privateEndpointName}
+          echo swaName:${swaName}
+          echo ================================================
+
+          az deployment group create --resource-group ${{ steps.create-resource-group.outputs.resource-group-name }} \
+                                      --mode Incremental \
+                                      --template-file ${{ github.workspace }}/infra/front_stack.bicep \
+                                      --parameters swaName=${swaName} \
+                                                   pepSubnetId=${pepSubnetId} \
+                                                   privateEndpointName=${privateEndpointName} \
+                                                   swaLocation=${swaLocation} \
+                                                   location=${location} \
+                                                   privateDnsZoneSubscriptionId=${{ vars.PRIVATE_DNS_ZONE_SUBSCRIPTION_ID }} \
+                                                   privateDnsZoneResourceGroupName=${privateDnsZoneResourceGroupName}
+
+          az staticwebapp secrets reset-api-key --name ${swaName} -g ${{ steps.create-resource-group.outputs.resource-group-name }}
+
+          echo "static-web-app-name=${swaName}" >> $GITHUB_OUTPUT
+
+        shell: bash
+
+      - name: Get Deployment Token
+        id: get-deployment-token
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+          deploymentToken=$(az staticwebapp secrets list --name ${{ steps.deploy-front-stack.outputs.static-web-app-name }} \
+                                                         -g ${{ steps.create-resource-group.outputs.resource-group-name }} \
+                                                         --query properties.apiKey -otsv
+                                                         )
+          echo ${deploymentToken}                                                         
+          echo "deployment-token=${deploymentToken}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Deploy Code
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.get-deployment-token.outputs.deployment-token }}
+          app_location: ${{steps.download-artifact.outputs.download-path}}/${{ steps.get-artifact-name.outputs.artifact-name }}
+          action: "upload"
+          skip_app_build: true
+
+      - name: Tag Addtional Info To Resource Group
+        id: tag-additional-info-to-resource-group
+        uses: ./.github/actions/tag-additional-info-to-resource-group
+        with:
+          resource-group-name: ${{ steps.create-resource-group.outputs.resource-group-name }}
+          ref-name: ${{ github.ref_name }}
+          commit-id: ${{ github.sha }}
+          side: ${{ steps.fetch-side-tag.outputs.side }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  agw-deploy:
+    if: ${{ fromJSON(github.event.inputs.which-stack-deploy)['agw'] == 'true'}}
+    needs: [rest-deploy, front-deploy]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Current DateTime
+        id: get-current-datetime
+        uses: ./.github/actions/get-current-datetime
+
+      - name: Fetch Side Tag
+        id: fetch-side-tag
+        uses: ./.github/actions/fetch-side-tag
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          prefix: ${{ vars.AGW_RESOURCEGROUP_NAME_PREFIX }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create Resource Group
+        id: create-resource-group
+        uses: ./.github/actions/create-resource-group
+        with:
+          region: ${{ inputs.region }}
+          env: ${{ inputs.env }}
+          dept: ${{ vars.DEPT }}
+          app-name: ${{ vars.APP_NAME }}
+          desc-prefix: ${{ vars.AGW_RESOURCEGROUP_NAME_PREFIX }}
+          desc-suffix: ${{ steps.get-current-datetime.outputs.now }}
+          is-stateless: true
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Agw Stack
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+
+          location=$(getLocation ${{ inputs.region }})
+
+          vnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          vnetName=$(createVNetName ${{ inputs.region }} ${{ inputs.env }} ${{ vars.DEPT }} ${{ vars.APP_NAME }})
+          vnetId=`az network vnet show --name ${vnetName} --resource-group ${vnetResourceGroupName} --query id -otsv`
+
+          subnetResourceGroupName=$(getVnetResourceGroup ${{ inputs.env }})
+          agwSubnetName=$(createSubnetName ${{ inputs.env }} ${{ vars.APP_NAME}} agw${{ steps.fetch-side-tag.outputs.side }} )
+          agwSubnetId=$(az network vnet subnet list --resource-group ${subnetResourceGroupName} \
+                                                              --vnet-name ${vnetName} \
+                                                              --query "[?name==\`${agwSubnetName}\`].id | [0]" -otsv)
+          agwPrivateIp=$(get_next_private_ip ${vnetResourceGroupName} ${vnetName} ${agwSubnetName})
+
+          managedIdResourceGroupNamePrefix=$(createResourceGroupName \
+                                                ${{ inputs.region }} \
+                                                ${{ inputs.env }} \
+                                                ${{ vars.DEPT }} \
+                                                ${{ vars.APP_NAME}} \
+                                                ${{ vars.MANAGED_ID_RESOURCEGROUP_NAME_PREFIX}})
+          managedIdResourceGroupName=$(getResourceGroupName ${managedIdResourceGroupNamePrefix})
+          userAssignedIdentityName=$(createUserAssignedIdentityName \
+                                      ${{ inputs.region }} \
+                                      ${{ inputs.env }} \
+                                      ${{ vars.DEPT }} \
+                                      ${{ vars.APP_NAME}}
+                                      )
+
+          logAnalyticsWorkspaceResourceGroupNamePrefix=$(createResourceGroupName \
+                                                    ${{ inputs.region}} \
+                                                    ${{ inputs.env }} \
+                                                    ${{ vars.DEPT }} \
+                                                    ${{ vars.APP_NAME}} \
+                                                    ${{ vars.LAW_RESOURCEGROUP_NAME_PREFIX }})
+          logAnalyticsWorkspaceResourceGroupName=$(getResourceGroupName ${logAnalyticsWorkspaceResourceGroupNamePrefix})
+          logAnalyticsWorkspaceName=$(createLogAnalyticsWorkspaceName \
+                                    ${{ inputs.region}} \
+                                    ${{ inputs.env }} \
+                                    ${{ vars.DEPT }} \
+                                    ${{ vars.APP_NAME}}
+                                    )
+
+          domain=${{ vars.AGW_DOMAIN }}
+          lowerDomain=$(echo ${domain,,})
+          agwName=$(createAgwName \
+                                ${{ inputs.region}} \
+                                ${{ inputs.env }} \
+                                ${{ vars.DEPT }} \
+                                ${{ vars.APP_NAME}} \
+                                ${{ steps.get-current-datetime.outputs.now }}
+                                )
+          pipName=$(createPublicIpName \
+                                ${{ inputs.region}} \
+                                ${{ inputs.env }} \
+                                ${{ vars.DEPT }} \
+                                ${{ vars.APP_NAME}} \
+                                ${{ steps.get-current-datetime.outputs.now }}
+                                )
+          kvName=$(createKeyVaultName \
+                                ${{ inputs.region}} \
+                                ${{ inputs.env }} \
+                                ${{ vars.DEPT }} \
+                                ${{ vars.APP_NAME}} 
+                                )
+
+          swaResourceGroupNamePrefix=$(createResourceGroupName \
+                                                ${{ inputs.region}} \
+                                                ${{ inputs.env }} \
+                                                ${{ vars.DEPT }} \
+                                                ${{ vars.APP_NAME}} \
+                                                ${{ vars.FRONT_RESOURCEGROUP_NAME_PREFIX }})
+          swaResourceGroupName=$(getResourceGroupName ${swaResourceGroupNamePrefix})
+          swaNamePrefix=$(createSwaName  \
+                                ${{ inputs.region}} \
+                                ${{ inputs.env }} \
+                                ${{ vars.DEPT }} \
+                                ${{ vars.APP_NAME}}
+                                )
+          swaName=$(az staticwebapp list -g ${swaResourceGroupName} --query "[].name" -otsv)
+          swaHost=$(az staticwebapp show -n ${swaName} -g ${swaResourceGroupName} --query "defaultHostname" -otsv)
+
+          restResourceGroupNamePrefix=$(createResourceGroupName \
+                                                ${{ inputs.region}} \
+                                                ${{ inputs.env }} \
+                                                ${{ vars.DEPT }} \
+                                                ${{ vars.APP_NAME}} \
+                                                ${{ vars.REST_RESOURCEGROUP_NAME_PREFIX }})
+          restResourceGroupName=$(getResourceGroupName ${restResourceGroupNamePrefix})
+          restName=$(az functionapp list -g ${restResourceGroupName} --query "[].name" -otsv)
+          restHost=$(az functionapp show -n ${restName} -g ${restResourceGroupName} --query "defaultHostName" -otsv)
+
+          echo ================================================
+          echo location:${location}
+          echo vnetResourceGroupName:${vnetResourceGroupName}
+          echo vnetName:${vnetName}
+          echo vnetId:${vnetId}
+          echo subnetResourceGroupName:${subnetResourceGroupName}
+          echo agwSubnetName:${agwSubnetName}
+          echo agwSubnetId:${agwSubnetId}
+          echo agwPrivateIp:${agwPrivateIp}         
+          echo managedIdResourceGroupNamePrefix:${managedIdResourceGroupNamePrefix}
+          echo managedIdResourceGroupName:${managedIdResourceGroupName}
+          echo userAssignedIdentityName:${userAssignedIdentityName}              
+          echo logAnalyticsWorkspaceResourceGroupNamePrefix:${logAnalyticsWorkspaceResourceGroupNamePrefix}
+          echo logAnalyticsWorkspaceResourceGroupName:${logAnalyticsWorkspaceResourceGroupName}
+          echo logAnalyticsWorkspaceName:${logAnalyticsWorkspaceName}
+          echo domain:${domain}
+          echo lowerDomain:${lowerDomain}
+          echo agwName:${agwName}
+          echo pipName:${pipName}
+          echo kvName:${kvName}          
+          echo swaResourceGroupNamePrefix:${swaResourceGroupNamePrefix}
+          echo swaResourceGroupName:${swaResourceGroupName}
+          echo swaName:${swaName}                
+          echo swaHost:${swaHost}
+          echo restResourceGroupNamePrefix:${restResourceGroupNamePrefix}
+          echo restResourceGroupName:${restResourceGroupName}
+          echo restName:${restName}                
+          echo restHost:${restHost}                
+          echo ================================================
+
+          az deployment group create --resource-group ${{ steps.create-resource-group.outputs.resource-group-name }} \
+                                      --mode Complete \
+                                      --template-file ${{ github.workspace }}/infra/agw_stack.bicep \
+                                      --parameters  agwName=${agwName} \
+                                                    agwSubnetId=${agwSubnetId} \
+                                                    env=${{ inputs.env }} \
+                                                    userManagedIdName=${userAssignedIdentityName} \
+                                                    userManagedIdRGName=${managedIdResourceGroupName} \
+                                                    location=${location} \
+                                                    keyContainerName=${kvName} \
+                                                    keyvaultName=${{ vars.AGW_KEYVAULT_NAME }} \
+                                                    domain=${lowerDomain} \
+                                                    agwPrivateIp=${agwPrivateIp} \
+                                                    lawResouceGroupName=${logAnalyticsWorkspaceResourceGroupName} \
+                                                    lawName=${logAnalyticsWorkspaceName} \
+                                                    pipName=${pipName} \
+                                                    uiBackendFqdn=${swaHost} \
+                                                    apiBackendFqdn=${restHost}
+        shell: bash
+
+      - name: Tag Addtional Info To Resource Group
+        id: tag-additional-info-to-resource-group
+        uses: ./.github/actions/tag-additional-info-to-resource-group
+        with:
+          resource-group-name: ${{ steps.create-resource-group.outputs.resource-group-name }}
+          ref-name: ${{ github.ref_name }}
+          commit-id: ${{ github.sha }}
+          side: ${{ steps.fetch-side-tag.outputs.side }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  update-dns:
+    if: ${{ ! failure() && inputs.does-update-dns }}
+    needs: [rest-deploy, front-deploy, agw-deploy]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Dns
+        run: |
+          source ${{ github.workspace }}/.github/scripts/shell.sh
+          hostname="@"
+          agwResourceGroupNamePrefix=$(createResourceGroupName \
+                                        ${{ inputs.region }} \
+                                        ${{ inputs.env }} \
+                                        ${{ vars.DEPT }} \
+                                        ${{ vars.APP_NAME}} \
+                                        ${{ vars.AGW_RESOURCEGROUP_NAME_PREFIX }})
+          agwResourceGroupName=$(getResourceGroupName ${agwResourceGroupNamePrefix})
+          privateDnsResourceGroupNamePrefix=$(createResourceGroupName \
+                                                ${{ inputs.region }} \
+                                                ${{ inputs.env }} \
+                                                ${{ vars.DEPT }} \
+                                                ${{ vars.APP_NAME }} \
+                                                ${{ vars.PRDNS_RESOURCEGROUP_NAME_PREFIX }})
+          privateDnsResourceGroupName=$(getResourceGroupName ${privateDnsResourceGroupNamePrefix})
+          oldIp=$(az network private-dns record-set a list -g ${privateDnsResourceGroupName} \
+                                                          -z ${{ vars.AGW_DOMAIN }} \
+                                                          --query "[?name==\`${hostname}\`].aRecords | [0] | [0] | ipv4Address" -otsv)
+          ipAddr=$(az network application-gateway list -g ${agwResourceGroupName} --query "[].frontendIPConfigurations | [].privateIPAddress" -otsv)
+
+          echo "::group::updatedns ==============================================="
+          echo "::group::updatedns agwResourceGroupNamePrefix:${agwResourceGroupNamePrefix}"
+          echo "::group::updatedns agwResourceGroupName:${agwResourceGroupName}"
+          echo "::group::updatedns privateDnsResourceGroupNamePrefix:${privateDnsResourceGroupNamePrefix}"
+          echo "::group::updatedns privateDnsResourceGroupName:${privateDnsResourceGroupName}"
+          echo "::group::updatedns oldIp:${oldIp}"
+          echo "::group::updatedns ipAddr:${ipAddr}"
+          echo "::group::updatedns ==============================================="
+
+          # record が存在しなかったら作成
+          isExsit=$(az network private-dns record-set a list -g ${privateDnsResourceGroupName} -z ${{ vars.AGW_DOMAIN }} --query "[?name == '${hostname}'] | length(@)")
+          if [ "${isExist}" == "0" ] ; then
+            echo "::group::updatedns not exist recordset"
+            az network private-dns record-set a create -g ${privateDnsResourceGroupName} -z ${{ vars.AGW_DOMAIN }} -n ${hostname} --ttl 10
+          fi
+          # 古いのを削除して、旧IP と新IPが同じでない（新しいIPが降られていたら）追加
+          if [ "${oldIp}" != "${ipAddr}" ]; then
+            if [ -n "${oldIp}" ]; then
+              az network private-dns record-set a add-record -g ${privateDnsResourceGroupName} -z ${{ vars.AGW_DOMAIN }} -n ${hostname} -a ${ipAddr}
+              az network private-dns record-set a remove-record -g ${privateDnsResourceGroupName} -z ${{ vars.AGW_DOMAIN }} -n ${hostname} -a ${oldIp}
+            else
+              az network private-dns record-set a add-record -g ${privateDnsResourceGroupName} -z ${{ vars.AGW_DOMAIN }} -n ${hostname} -a ${ipAddr}
+            fi
+          fi
+
+        shell: bash
